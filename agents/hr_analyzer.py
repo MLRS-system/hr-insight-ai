@@ -26,7 +26,7 @@ except ImportError:
 
 class HRApplicabilityAgent:
     """
-    지연 로딩과 조건부 양자화가 적용된 HRD 적용 가능성 분석 에이전트.
+    지연 로딩, 조건부 양자화, 상세 로깅이 적용된 HRD 적용 가능성 분석 에이전트.
     """
 
     def __init__(self, shared_context: SharedContext):
@@ -54,6 +54,7 @@ class HRApplicabilityAgent:
             return
             
         print("    (Agent: HRApplicability) - Loading models for the first time...")
+        self.shared_context.add_history("HRApplicabilityAgent", "Model Loading", "HR 분석 모델을 메모리에 로드하는 중...")
         try:
             print(f"    (Sub-task) Loading tokenizer: {HR_ANALYZER_MODEL_PATH}")
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -62,7 +63,7 @@ class HRApplicabilityAgent:
 
             print(f"    (Sub-task) Loading model: {HR_ANALYZER_MODEL_PATH}")
             quantization_config = None
-            if USE_4BIT_QUANTIZATION:
+            if USE_4BIT_QUANTIZATION and self.device == "cuda":
                 print("    (Sub-task) - Applying 4-bit quantization.")
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -81,6 +82,7 @@ class HRApplicabilityAgent:
 
             self.models_loaded = True
             print("    (Agent: HRApplicability) - Models loaded successfully.")
+            self.shared_context.add_history("HRApplicabilityAgent", "Model Loading", "✓ HR 분석 모델 로드 완료")
         except Exception as e:
             if "bitsandbytes" in str(e):
                  print(f"    [CRITICAL ERROR] bitsandbytes 라이브러리 로딩 실패. Cloud CPU 환경에서는 지원되지 않을 수 있습니다: {e}")
@@ -100,25 +102,21 @@ class HRApplicabilityAgent:
         """작업 시작 전 모델을 로드하고, HR/HRD 적용 아이디어를 생성합니다."""
         self._load_models_if_needed()
         
-        print("    (Agent: HRApplicability) - Analyzing content from SharedContext...")
         analysis_result = self.shared_context.get("content_summary")
 
         if not analysis_result:
-            print("    (Agent: HRApplicability) - No content analysis result found in SharedContext.")
             self.shared_context.add_feedback("HRApplicabilityAgent: No content analysis result found. Requires content_summary.")
             return
 
+        self.shared_context.add_history("HRApplicabilityAgent", "Analyzing", "콘텐츠와 관련된 최신 HRD 트렌드를 웹에서 검색하는 중...")
         summary_for_search = self._extract_summary_for_search(analysis_result)
         search_query = f'"{summary_for_search}" 최신 HRD 트렌드 적용 사례'
-        
-        print(f"    (Agent: HRApplicability) - Performing hybrid web search...")
         search_results = perform_web_search(search_query)
+        self.shared_context.add_history("HRApplicabilityAgent", "Analyzing", "✓ 웹 검색 완료")
         
         if search_results:
-            print("    (Agent: HRApplicability) - Web search results found.")
             web_context = f"\n\n[웹 검색 추가 정보]:\n{search_results}\n"
         else:
-            print("    (Agent: HRApplicability) - No web search results found or search failed.")
             web_context = "\n\n[웹 검색 추가 정보]:\n검색된 정보 없음."
 
         prompt = self.prompt_template.format(
@@ -127,6 +125,7 @@ class HRApplicabilityAgent:
         )
 
         try:
+            self.shared_context.add_history("HRApplicabilityAgent", "Analyzing", "HRD 적용 아이디어를 생성하는 중...")
             chat = [{"role": "user", "content": prompt}]
             input_text = self.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
         except Exception:
@@ -140,22 +139,24 @@ class HRApplicabilityAgent:
             hr_analysis_result = response_text.strip()
 
             self.shared_context.set("hr_ideas", hr_analysis_result)
-            self.shared_context.add_history("HRApplicabilityAgent", "Analyze HR Applicability", "HR/HRD 적용 아이디어 생성 완료.")
-            print("    (Agent: HRApplicability) - HR/HRD analysis complete. Result stored in SharedContext.")
+            self.shared_context.add_history("HRApplicabilityAgent", "Analyzing", "✓ HRD 적용 아이디어 생성 완료")
+            print("    (Agent: HRApplicability) - HR/HRD analysis complete.")
 
         except Exception as e:
             print(f"    [ERROR] HRApplicabilityAgent processing failed: {e}")
             self.shared_context.add_feedback(f"HRApplicabilityAgent: Error during analysis: {e}")
+            self.shared_context.add_history("HRApplicabilityAgent", "Analyzing", f"아이디어 생성 중 오류 발생: {e}")
+
 
     def refine(self, feedback: str):
         """피드백을 바탕으로 기존 HR 아이디어를 개선합니다."""
         self._load_models_if_needed()
         
-        print("    (Agent: HRApplicability) - Refining HR ideas based on feedback...")
         original_ideas = self.shared_context.get("hr_ideas")
         
         refine_prompt = f"기존 HR 아이디어:\n{original_ideas}\n\n피드백:\n{feedback}\n\n위 피드백을 반영하여 HR 아이디어를 개선해주세요. 개선된 아이디어만 간결하게 제시해주세요."
         
+        self.shared_context.add_history("HRApplicabilityAgent", "Refining", "피드백을 반영하여 아이디어를 개선하는 중...")
         try:
             chat = [{"role": "user", "content": refine_prompt}]
             input_text = self.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
@@ -170,9 +171,10 @@ class HRApplicabilityAgent:
             refined_ideas = response_text.strip()
 
             self.shared_context.set("hr_ideas", refined_ideas)
-            self.shared_context.add_history("HRApplicabilityAgent", "Refine HR Ideas", "피드백 기반 HR 아이디어 개선 완료.")
+            self.shared_context.add_history("HRApplicabilityAgent", "Refining", "✓ 피드백 기반 아이디어 개선 완료")
             print("    (Agent: HRApplicability) - HR ideas refinement complete.")
 
         except Exception as e:
             print(f"    [ERROR] HRApplicabilityAgent refinement failed: {e}")
             self.shared_context.add_feedback(f"HRApplicabilityAgent: Error during refinement: {e}")
+            self.shared_context.add_history("HRApplicabilityAgent", "Refining", f"개선 중 오류 발생: {e}")

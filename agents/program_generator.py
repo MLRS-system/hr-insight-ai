@@ -26,7 +26,7 @@ except ImportError:
 
 class ProgramGeneratorAgent:
     """
-    지연 로딩과 조건부 양자화가 적용된 교육 프로그램 생성 에이전트.
+    지연 로딩, 조건부 양자화, 상세 로깅이 적용된 교육 프로그램 생성 에이전트.
     """
 
     def __init__(self, shared_context: SharedContext):
@@ -54,6 +54,7 @@ class ProgramGeneratorAgent:
             return
             
         print("    (Agent: ProgramGenerator) - Loading models for the first time...")
+        self.shared_context.add_history("ProgramGeneratorAgent", "Model Loading", "교육 프로그램 생성 모델을 메모리에 로드하는 중...")
         try:
             print(f"    (Sub-task) Loading tokenizer: {PROGRAM_GENERATOR_MODEL_PATH}")
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -62,7 +63,7 @@ class ProgramGeneratorAgent:
 
             print(f"    (Sub-task) Loading model: {PROGRAM_GENERATOR_MODEL_PATH}")
             quantization_config = None
-            if USE_4BIT_QUANTIZATION:
+            if USE_4BIT_QUANTIZATION and self.device == "cuda":
                 print("    (Sub-task) - Applying 4-bit quantization.")
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -81,6 +82,7 @@ class ProgramGeneratorAgent:
             
             self.models_loaded = True
             print("    (Agent: ProgramGenerator) - Models loaded successfully.")
+            self.shared_context.add_history("ProgramGeneratorAgent", "Model Loading", "✓ 교육 프로그램 생성 모델 로드 완료")
         except Exception as e:
             if "bitsandbytes" in str(e):
                  print(f"    [CRITICAL ERROR] bitsandbytes 라이브러리 로딩 실패. Cloud CPU 환경에서는 지원되지 않을 수 있습니다: {e}")
@@ -102,25 +104,21 @@ class ProgramGeneratorAgent:
         """작업 시작 전 모델을 로드하고, 훈련 프로그램을 생성합니다."""
         self._load_models_if_needed()
 
-        print("    (Agent: ProgramGenerator) - Generating program from SharedContext...")
         hr_ideas = self.shared_context.get("hr_ideas")
 
         if not hr_ideas:
-            print("    (Agent: ProgramGenerator) - No HR ideas found in SharedContext.")
             self.shared_context.add_feedback("ProgramGenerator: No HR ideas found. Requires hr_ideas.")
             return
 
+        self.shared_context.add_history("ProgramGeneratorAgent", "Generating", "교육 프로그램 관련 사례를 웹에서 검색하는 중...")
         initiatives_for_search = self._extract_initiatives_for_search(hr_ideas)
         search_query = f'"{initiatives_for_search}" 관련 기업 교육 프로그램 사례'
-        
-        print(f"    (Agent: ProgramGenerator) - Performing hybrid web search for: {search_query}")
         search_results = perform_web_search(search_query)
+        self.shared_context.add_history("ProgramGeneratorAgent", "Generating", "✓ 웹 검색 완료")
 
         if search_results:
-            print(f"    (Agent: ProgramGenerator) - Web search results found.")
             web_context = f"\n\n[웹 검색 추가 정보]\n{search_results}\n"
         else:
-            print("    (Agent: ProgramGenerator) - No web search results found or search disabled.")
             web_context = "\n\n[웹 검색 추가 정보]\n검색된 정보 없음."
 
         prompt = self.prompt_template.format(
@@ -129,6 +127,7 @@ class ProgramGeneratorAgent:
         )
 
         try:
+            self.shared_context.add_history("ProgramGeneratorAgent", "Generating", "구체적인 교육 프로그램을 생성하는 중...")
             chat = [{"role": "user", "content": prompt}]
             input_text = self.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
         except Exception:
@@ -147,22 +146,23 @@ class ProgramGeneratorAgent:
             generated_program = response_text.strip()
 
             self.shared_context.set("training_program", generated_program)
-            self.shared_context.add_history("ProgramGeneratorAgent", "Generate Program", "훈련 프로그램 생성 완료.")
-            print("    (Agent: ProgramGenerator) - Program generation complete. Result stored in SharedContext.")
+            self.shared_context.add_history("ProgramGeneratorAgent", "Generating", "✓ 훈련 프로그램 생성 완료")
+            print("    (Agent: ProgramGenerator) - Program generation complete.")
 
         except Exception as e:
             print(f"    [ERROR] ProgramGeneratorAgent processing failed: {e}")
             self.shared_context.add_feedback(f"ProgramGenerator: Error during generation: {e}")
+            self.shared_context.add_history("ProgramGeneratorAgent", "Generating", f"프로그램 생성 중 오류 발생: {e}")
 
     def refine(self, feedback: str):
         """피드백을 바탕으로 기존 교육 프로그램을 개선합니다."""
         self._load_models_if_needed()
         
-        print("    (Agent: ProgramGenerator) - Refining training program based on feedback...")
         original_program = self.shared_context.get("training_program")
         
         refine_prompt = f"기존 교육 프로그램:\n{original_program}\n\n피드백:\n{feedback}\n\n위 피드백을 반영하여 교육 프로그램을 개선해주세요. 개선된 프로그램만 간결하게 제시해주세요."
         
+        self.shared_context.add_history("ProgramGeneratorAgent", "Refining", "피드백을 반영하여 프로그램을 개선하는 중...")
         try:
             chat = [{"role": "user", "content": refine_prompt}]
             input_text = self.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
@@ -182,9 +182,10 @@ class ProgramGeneratorAgent:
             refined_program = response_text.strip()
 
             self.shared_context.set("training_program", refined_program)
-            self.shared_context.add_history("ProgramGeneratorAgent", "Refine Program", "피드백 기반 교육 프로그램 개선 완료.")
+            self.shared_context.add_history("ProgramGeneratorAgent", "Refining", "✓ 피드백 기반 프로그램 개선 완료")
             print("    (Agent: ProgramGenerator) - Training program refinement complete.")
 
         except Exception as e:
             print(f"    [ERROR] ProgramGeneratorAgent refinement failed: {e}")
             self.shared_context.add_feedback(f"ProgramGenerator: Error during refinement: {e}")
+            self.shared_context.add_history("ProgramGeneratorAgent", "Refining", f"개선 중 오류 발생: {e}")
