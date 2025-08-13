@@ -1,31 +1,33 @@
 # cloudbuild.yaml
+
 steps:
-  # 1단계: Docker 이미지 빌드
+  # 1. Build the container image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/hr-insight-repo/mlrs:latest', '.']
-
-  # 2단계: 빌드한 이미지를 Artifact Registry(창고)에 업로드
+  
+  # 2. Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/hr-insight-repo/mlrs:latest']
-
-  # 3단계: 업로드된 이미지로 Cloud Run에 배포
+  
+  # 3. Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'mlrs' # 서비스 이름
+      - 'mlrs' # Service name
       - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/hr-insight-repo/mlrs:latest'
       - '--region=us-central1'
       - '--platform=managed'
       - '--allow-unauthenticated'
       - '--port=10000'
-      - '--memory=2Gi'
-      - '--cpu=2'
-      # 환경 변수는 Cloud Run 서비스 설정에서 직접 관리하는 것이 더 안전합니다.
-      # 만약 여기에 추가하고 싶다면 아래와 같이 --update-env-vars 플래그를 사용합니다.
-      # - '--update-env-vars=KEY1=VALUE1,KEY2=VALUE2'
+      - '--memory=4Gi' # Increased memory from previous steps
+      - '--cpu=2' # Increased CPU from previous steps
 
-# 빌드 및 푸시할 최종 이미지 목록
+# Build and push the final image
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/hr-insight-repo/mlrs:latest'
+
+# Add this section to resolve the error
+options:
+  logging: CLOUD_LOGGING_ONLY
