@@ -20,7 +20,7 @@ if TEMP_DIR:
     os.environ["TEMP"] = TEMP_DIR
     os.environ["TMP"] = TEMP_DIR
 
-USE_4BIT_QUANTIZATION = True
+USE_4BIT_QUANTIZATION = os.getenv("RUNNING_IN_CLOUD", "false").lower() != "true"
 MAX_SEQUENCE_LENGTH = 4096
 BATCH_SIZE = 4
 

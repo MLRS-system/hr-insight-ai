@@ -1,14 +1,13 @@
+# agents/program_generator.py
+
 import os
 import re
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from accelerate import Accelerator
 
-# 새로운 하이브리드 웹 검색 함수를 임포트합니다.
 from utils.web_search import perform_web_search
 from core.shared_context import SharedContext
 
-# Import configuration from config.py
 try:
     from config import (
         PROGRAM_GENERATOR_MODEL_PATH,
@@ -19,7 +18,6 @@ try:
     )
 except ImportError:
     print("[Error] config.py not found or not configured correctly.")
-    # Set default fallbacks
     PROGRAM_GENERATOR_MODEL_PATH = "kakaocorp/kanana-1.5-8b-instruct-2505"
     USE_4BIT_QUANTIZATION = True
     HF_CACHE_DIR = None
@@ -27,25 +25,45 @@ except ImportError:
     BATCH_SIZE = 1
 
 class ProgramGeneratorAgent:
-    """Agent to generate a detailed training program based on HR ideas using a local LLM and hybrid web search."""
+    """
+    지연 로딩과 조건부 양자화가 적용된 교육 프로그램 생성 에이전트.
+    """
 
     def __init__(self, shared_context: SharedContext):
-        """Initializes the agent, loads the model, tokenizer, and prompt."""
+        """에이전트를 초기화하지만, 무거운 모델들은 로드하지 않습니다."""
         self.shared_context = shared_context
-        print("    (Agent: ProgramGenerator) - Initializing...")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"    (Agent: ProgramGenerator) - Using device: {self.device}")
-
+        
+        self.tokenizer = None
+        self.model = None
+        self.models_loaded = False
+        self.prompt_template = ""
+        
         try:
-            print(f"    (Agent: ProgramGenerator) - Loading tokenizer: {PROGRAM_GENERATOR_MODEL_PATH}")
+            prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'program_generation.prompt')
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                self.prompt_template = f.read()
+        except Exception as e:
+            print(f"    [CRITICAL ERROR] ProgramGeneratorAgent: 프롬프트 파일 로딩 실패: {e}")
+
+        print("    (Agent: ProgramGenerator) - Initialized (Lazy Loading Mode).")
+
+    def _load_models_if_needed(self):
+        """실제로 필요할 때 모델을 로드하는 내부 함수"""
+        if self.models_loaded:
+            return
+            
+        print("    (Agent: ProgramGenerator) - Loading models for the first time...")
+        try:
+            print(f"    (Sub-task) Loading tokenizer: {PROGRAM_GENERATOR_MODEL_PATH}")
             self.tokenizer = AutoTokenizer.from_pretrained(
                 PROGRAM_GENERATOR_MODEL_PATH, cache_dir=HF_CACHE_DIR, trust_remote_code=True
             )
 
-            print(f"    (Agent: ProgramGenerator) - Loading model: {PROGRAM_GENERATOR_MODEL_PATH}")
+            print(f"    (Sub-task) Loading model: {PROGRAM_GENERATOR_MODEL_PATH}")
             quantization_config = None
             if USE_4BIT_QUANTIZATION:
-                print("    (Agent: ProgramGenerator) - Using 4-bit quantization.")
+                print("    (Sub-task) - Applying 4-bit quantization.")
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_use_double_quant=True,
@@ -61,18 +79,17 @@ class ProgramGeneratorAgent:
                 trust_remote_code=True
             ).to(self.device)
             
+            self.models_loaded = True
+            print("    (Agent: ProgramGenerator) - Models loaded successfully.")
         except Exception as e:
-            print(f"    [CRITICAL ERROR] Failed to load model or tokenizer for ProgramGeneratorAgent: {e}")
+            if "bitsandbytes" in str(e):
+                 print(f"    [CRITICAL ERROR] bitsandbytes 라이브러리 로딩 실패. Cloud CPU 환경에서는 지원되지 않을 수 있습니다: {e}")
+            else:
+                print(f"    [CRITICAL ERROR] Failed to load model for ProgramGeneratorAgent: {e}")
             raise
 
-        # Load the prompt template
-        prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'program_generation.prompt')
-        with open(prompt_path, 'r', encoding='utf-8') as f:
-            self.prompt_template = f.read()
-        print("    (Agent: ProgramGenerator) - Initialization complete.")
-
     def _extract_initiatives_for_search(self, hr_ideas: str) -> str:
-        """Extracts the Priority Initiatives for a focused web search."""
+        """웹 검색을 위해 HR 아이디어에서 핵심 이니셔티브를 추출합니다."""
         match = re.search(r"(2\.\s*Priority Initiatives|\*\*2\. Priority Initiatives\*\*)\s*\n(.*?)(?=\n\n|3\.|\*\*3\.)", hr_ideas, re.DOTALL | re.IGNORECASE)
         if match:
             initiatives = match.group(2).strip()
@@ -82,11 +99,10 @@ class ProgramGeneratorAgent:
         return hr_ideas[:150]
 
     def generate(self):
-        """
-        SharedContext에서 HR 아이디어를 읽고, 하이브리드 웹 검색을 통해 훈련 프로그램을 생성합니다.
-        """
-        print("    (Agent: ProgramGenerator) - Generating program from SharedContext...")
+        """작업 시작 전 모델을 로드하고, 훈련 프로그램을 생성합니다."""
+        self._load_models_if_needed()
 
+        print("    (Agent: ProgramGenerator) - Generating program from SharedContext...")
         hr_ideas = self.shared_context.get("hr_ideas")
 
         if not hr_ideas:
@@ -94,12 +110,11 @@ class ProgramGeneratorAgent:
             self.shared_context.add_feedback("ProgramGenerator: No HR ideas found. Requires hr_ideas.")
             return
 
-        # --- Hybrid Web Search Integration ---
         initiatives_for_search = self._extract_initiatives_for_search(hr_ideas)
         search_query = f'"{initiatives_for_search}" 관련 기업 교육 프로그램 사례'
         
         print(f"    (Agent: ProgramGenerator) - Performing hybrid web search for: {search_query}")
-        search_results = perform_web_search(search_query) # <<< 함수 호출 변경
+        search_results = perform_web_search(search_query)
 
         if search_results:
             print(f"    (Agent: ProgramGenerator) - Web search results found.")
@@ -140,9 +155,9 @@ class ProgramGeneratorAgent:
             self.shared_context.add_feedback(f"ProgramGenerator: Error during generation: {e}")
 
     def refine(self, feedback: str):
-        """
-        피드백을 바탕으로 기존 교육 프로그램을 개선합니다.
-        """
+        """피드백을 바탕으로 기존 교육 프로그램을 개선합니다."""
+        self._load_models_if_needed()
+        
         print("    (Agent: ProgramGenerator) - Refining training program based on feedback...")
         original_program = self.shared_context.get("training_program")
         
