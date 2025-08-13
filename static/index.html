@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HR Insight AI</title>
+    <style>
+        /* 간단한 디자인을 위한 CSS 코드입니다. */
+        body { font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: auto; background-color: #f4f4f9; }
+        h1, h2 { color: #333; }
+        .container { background-color: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"] { width: 95%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background-color: #0056b3; }
+        #status-container, #result-container { margin-top: 20px; padding: 15px; border: 1px solid #eee; border-radius: 4px; background-color: #fafafa; white-space: pre-wrap; /* 줄바꿈을 위해 추가 */ }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>HR Insight AI 시스템</h1>
+        <p>분석하고 싶은 콘텐츠(이미지 파일 경로, 기사/유튜브 URL 등)와 요청사항을 입력하세요.</p>
+        
+        <form id="analysis-form">
+            <div class="form-group">
+                <label for="user-request">요청 사항</label>
+                <input type="text" id="user-request" value="이 콘텐츠를 요약하고, HRD 관점에서 분석하여 교육 프로그램을 제안해줘." required>
+            </div>
+            <div class="form-group">
+                <label for="path-or-url">파일 경로 또는 URL</label>
+                <input type="text" id="path-or-url" value="C:/Users/wongi/Desktop/mlrs/input/KakaoTalk_20250803_230003940.jpg" required>
+            </div>
+            <button type="submit">분석 시작</button>
+        </form>
+
+        <div id="status-container" style="display:none;">
+            <h2>처리 현황</h2>
+            <div class="loader" id="loader"></div>
+            <pre id="status-log"></pre>
+        </div>
+
+        <div id="result-container" style="display:none;">
+            <h2>최종 보고서</h2>
+            <pre id="final-report"></pre>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('analysis-form');
+        const statusContainer = document.getElementById('status-container');
+        const statusLog = document.getElementById('status-log');
+        const resultContainer = document.getElementById('result-container');
+        const finalReport = document.getElementById('final-report');
+        const loader = document.getElementById('loader');
+
+        let pollingInterval;
+
+        // 폼 제출 이벤트를 감지
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault(); // 페이지가 새로고침되는 것을 방지
+
+            // 이전 결과 숨기기
+            statusContainer.style.display = 'block';
+            resultContainer.style.display = 'none';
+            statusLog.textContent = '분석을 요청하는 중...';
+            loader.style.display = 'block';
+
+            const userRequest = document.getElementById('user-request').value;
+            const pathOrUrl = document.getElementById('path-or-url').value;
+
+            // 1. /run-analysis API 호출 (백그라운드 작업 시작)
+            const response = await fetch('/run-analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_request: userRequest,
+                    path_or_url: pathOrUrl.replace(/\\/g, '/') // 백슬래시를 슬래시로 변경
+                })
+            });
+            const data = await response.json();
+            const jobId = data.job_id;
+
+            if (!jobId) {
+                statusLog.textContent = '오류: 분석 작업을 시작하지 못했습니다.';
+                loader.style.display = 'none';
+                return;
+            }
+
+            // 2. /status API를 주기적으로 호출 (폴링)
+            pollingInterval = setInterval(() => {
+                checkStatus(jobId);
+            }, 3000); // 3초마다 상태 확인
+        });
+
+        async function checkStatus(jobId) {
+            const response = await fetch(`/status/${jobId}`);
+            const data = await response.json();
+            
+            // 작업 기록(history)을 화면에 예쁘게 표시
+            statusLog.textContent = data.history.map(item => `[${item.agent}] - ${item.action}`).join('\n');
+            
+            // 작업이 완료되면
+            if (data.status === '완료') {
+                clearInterval(pollingInterval); // 주기적인 호출 중단
+                loader.style.display = 'none';
+                statusLog.textContent += '\n\n분석이 완료되었습니다! 최종 보고서를 가져옵니다...';
+                
+                // 3. /result API 호출 (최종 결과 가져오기)
+                const resultResponse = await fetch(`/result/${jobId}`);
+                const resultData = await resultResponse.json();
+                
+                resultContainer.style.display = 'block';
+                finalReport.textContent = resultData.result;
+            } else if (data.status === '오류 발생') {
+                clearInterval(pollingInterval);
+                loader.style.display = 'none';
+                statusLog.textContent += `\n\n오류 발생: ${data.result}`;
+            }
+        }
+    </script>
+</body>
+</html>

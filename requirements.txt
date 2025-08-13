@@ -1,0 +1,27 @@
+# Core library for Hugging Face models
+transformers
+
+# Deep learning framework
+torch
+
+# For efficient model loading and hardware management
+accelerate
+
+# For 4-bit quantization to save memory
+bitsandbytes
+
+# Often required for tokenizers for many models
+sentencepiece
+
+PyPDF2
+Pillow
+
+# For character encoding detection
+chardet
+langchain-community
+langchain-core
+
+# For web scraping and URL content extraction
+requests
+beautifulsoup4
+youtube-transcript-api
