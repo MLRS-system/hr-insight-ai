@@ -22,7 +22,7 @@ steps:
       - '--allow-unauthenticated'
       - '--port=10000'
       - '--memory=4Gi' # Increased memory from previous steps
-      - '--cpu=2' # Increased CPU from previous steps
+      - '--cpu=4' # Increased CPU from previous steps
 
 # Build and push the final image
 images:
