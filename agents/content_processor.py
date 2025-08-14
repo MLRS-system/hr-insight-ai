@@ -8,25 +8,29 @@ import easyocr
 from transformers import AutoProcessor, BlipForConditionalGeneration, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from core.shared_context import SharedContext
+# file_handler는 이제 Orchestrator 레벨에서만 사용되므로 여기서 직접 임포트할 필요가 없습니다.
+# from utils.file_handler import get_content_from_input
 from config import USE_4BIT_QUANTIZATION, HF_CACHE_DIR, MAX_SEQUENCE_LENGTH, CAPTIONING_MODEL_PATH, SYNTHESIS_LLM_PATH
 
 class ContentProcessorAgent:
     """
-    지연 로딩, 조건부 양자화, 상세 로깅, 이미지 처리 로직이 모두 수정된 최종 에이전트.
+    지연 로딩, 조건부 양자화, 상세 로깅, 명확한 책임 분리가 적용된 최종 콘텐츠 처리 에이전트.
     """
     def __init__(self, shared_context: SharedContext):
         """에이전트를 초기화하지만, 무거운 모델들은 로드하지 않습니다."""
         self.shared_context = shared_context
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
+        # 모델 관련 변수들을 None으로 초기화
         self.ocr_reader = None
         self.caption_processor = None
         self.caption_model = None
         self.llm_tokenizer = None
         self.llm_model = None
-        self.models_loaded = False
+        self.models_loaded = False # 로딩 상태 플래그
         self.prompt_template = ""
         
+        # 프롬프트 템플릿은 미리 로드
         try:
             prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'content_summary.prompt')
             with open(prompt_path, 'r', encoding='utf-8') as f:
@@ -48,7 +52,7 @@ class ContentProcessorAgent:
             self.ocr_reader = easyocr.Reader(['ko', 'en'], gpu=torch.cuda.is_available())
 
             print(f"    (Sub-task) Loading Image Captioning model ({CAPTIONING_MODEL_PATH})...")
-            self.caption_processor = AutoProcessor.from_pretrained(CAPTIONING_MODEL_PATH, cache_dir=HF_CACHE_DIR, use_fast=True)
+            self.caption_processor = AutoProcessor.from_pretrained(CAPTIONING_MODEL_PATH, cache_dir=HF_CACHE_DIR)
             self.caption_model = BlipForConditionalGeneration.from_pretrained(CAPTIONING_MODEL_PATH, cache_dir=HF_CACHE_DIR).to(self.device)
 
             print(f"    (Sub-task) Loading Synthesis LLM ({SYNTHESIS_LLM_PATH})...")
@@ -84,7 +88,7 @@ class ContentProcessorAgent:
 
     def process(self):
         """
-        입력 유형(파일/텍스트)에 따라 올바른 파이프라인을 실행하도록 수정된 최종 버전
+        입력 유형(파일/텍스트)에 따라 올바른 파이프라인을 실행하도록 책임 소재를 명확히 한 최종 버전
         """
         self._load_models_if_needed()
         
@@ -97,29 +101,31 @@ class ContentProcessorAgent:
                 # 이미지 파일인지 확인하여 이미지 처리 파이프라인 실행
                 Image.open(file_path_input).verify() # 이미지 파일인지 간단히 확인
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지 분석 파이프라인 시작...")
-                
-                # OCR과 캡셔닝 수행
                 image = Image.open(file_path_input).convert("RGB")
                 
+                # --- OCR (방탄 로직 추가) ---
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트 추출 중 (OCR)...")
                 ocr_results = self.ocr_reader.readtext(file_path_input, paragraph=True)
-                extracted_text = "\n".join([res[1] for res in ocr_results])
+                extracted_text = "\n".join([res[1] for res in ocr_results]) if ocr_results else "이미지에서 텍스트를 찾을 수 없습니다."
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 텍스트 추출 완료")
 
+                # --- Captioning (방탄 로직 추가) ---
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "시각적 특징 분석 중 (Captioning)...")
                 caption_inputs = self.caption_processor(images=image, return_tensors="pt").to(self.device)
                 caption_outputs = self.caption_model.generate(**caption_inputs, max_new_tokens=128)
-                visual_caption = self.caption_processor.decode(caption_outputs[0], skip_special_tokens=True)
+                visual_caption = self.caption_processor.decode(caption_outputs[0], skip_special_tokens=True) if caption_outputs else "이미지의 시각적 특징을 분석할 수 없습니다."
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 시각적 분석 완료")
                 
                 combined_content = f"[이미지에서 추출된 텍스트]:\n{extracted_text}\n\n[이미지의 시각적 요약]:\n{visual_caption}"
                 self._summarize_text(combined_content)
                 return
 
-            except (IOError, SyntaxError) as e:
+            except (IOError, SyntaxError):
                 # 이미지 파일이 아닌 경우 (file_handler가 텍스트를 추출하지 못한 경우)
-                print(f"    (ContentProcessor) - Not a valid image file, or text extraction failed: {e}")
-                self.shared_context.add_feedback("ContentProcessor: 지원하지 않는 파일 형식이거나 파일이 손상되었습니다.")
+                error_msg = "지원하지 않는 파일 형식이거나 파일이 손상되었습니다."
+                print(f"    (ContentProcessor) - {error_msg}")
+                self.shared_context.add_feedback(f"ContentProcessor: {error_msg}")
+                self.shared_context.set("content_summary", f"오류: {error_msg}")
                 return
 
         # 2. 텍스트 입력만 있는 경우
@@ -129,34 +135,36 @@ class ContentProcessorAgent:
             return
 
         # 3. 유효한 입력이 없는 경우
-        self.shared_context.add_feedback("ContentProcessor: 유효한 입력이 없습니다.")
+        error_msg = "유효한 입력이 없습니다."
+        self.shared_context.add_feedback(f"ContentProcessor: {error_msg}")
+        self.shared_context.set("content_summary", f"오류: {error_msg}")
+
 
     def _summarize_text(self, content: str):
-        """로드된 LLM을 사용하여 텍스트를 요약하는 헬퍼 함수 (안정성 강화)"""
+        """LLM이 실패하더라도 절대 멈추지 않는 최종 요약 함수"""
         self.shared_context.add_history("ContentProcessorAgent", "Processing", "정보 종합 및 요약 중...")
+        final_summary = "오류: 콘텐츠 요약에 실패했습니다." # 기본 오류 메시지
         try:
             final_prompt = self.prompt_template.format(content=content)
             inputs = self.llm_tokenizer(final_prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH // 2).to(self.device)
             
             outputs = self.llm_model.generate(**inputs, max_new_tokens=MAX_SEQUENCE_LENGTH // 2, temperature=0.7)
             
+            # 모델 출력이 비어있지 않은지 꼼꼼하게 확인
             if outputs is not None and len(outputs) > 0:
-                final_summary = self.llm_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
-            else:
-                final_summary = "요약 결과를 생성하는 데 실패했습니다."
-                print("    [WARNING] LLM model generated empty output.")
+                decoded_summary = self.llm_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+                if decoded_summary: # 디코딩된 결과도 비어있지 않은지 확인
+                    final_summary = decoded_summary
 
-            if not final_summary:
-                final_summary = "콘텐츠에서 핵심 내용을 요약할 수 없습니다."
-
-            self.shared_context.set("content_summary", final_summary)
             self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 콘텐츠 요약 완료")
         except Exception as e:
             error_message = f"요약 중 오류 발생: {e}"
             print(f"    [ERROR] Text summarization failed: {e}")
-            self.shared_context.add_feedback(f"ContentProcessor: {error_message}")
-            self.shared_context.set("content_summary", error_message)
+            final_summary = f"오류: 콘텐츠를 요약하는 중 문제가 발생했습니다.\n세부 정보: {e}"
             self.shared_context.add_history("ContentProcessorAgent", "Processing", error_message)
+        finally:
+            # 어떤 경우에도 content_summary를 설정하여 NoneType 오류를 원천 차단
+            self.shared_context.set("content_summary", final_summary)
 
     def refine(self, feedback: str):
         """피드백을 바탕으로 요약문을 개선합니다."""

@@ -49,9 +49,12 @@ def get_transcript_from_youtube_url(url: str):
         print(f"    [ERROR] Failed to process YouTube link: {e}")
         return None, None
 
+# --- Main Content Getter ---
+
 def get_content_from_input(path_or_url: str):
     """
     URL, 로컬 파일, 또는 로컬 디렉터리 경로를 읽어 콘텐츠와 타입을 반환합니다.
+    이미지 파일은 경로를 그대로 반환하여 ContentProcessor가 처리하도록 위임합니다.
     """
     print(f"    (File Handler) - Processing input: {path_or_url}")
 
@@ -65,9 +68,12 @@ def get_content_from_input(path_or_url: str):
     if os.path.isdir(file_path):
         print(f"    (File Handler) - Path is a directory. Searching for files.")
         try:
-            files_in_dir = [f for f in os.listdir(file_path) if os.path.isfile(os.path.join(file_path, f))]
+            # 숨김 파일을 제외한 모든 파일을 찾습니다.
+            files_in_dir = [f for f in os.listdir(file_path) if os.path.isfile(os.path.join(file_path, f)) and not f.startswith('.')]
             if not files_in_dir:
+                print(f"    [WARNING] No files found in directory: {file_path}")
                 return None, None
+            # 첫 번째 파일을 분석 대상으로 선택합니다.
             file_path = os.path.join(file_path, files_in_dir[0])
             print(f"    (File Handler) - Processing first file found: {file_path}")
         except Exception as e:
@@ -83,7 +89,7 @@ def get_content_from_input(path_or_url: str):
         file_extension = os.path.splitext(file_path)[1].lower()
         print(f"    (File Handler) - Detected file type: '{file_extension}'")
 
-        # --- 이미지 파일은 경로를 그대로 반환 ---
+        # --- 이미지 파일은 경로와 타입을 그대로 반환 ---
         if file_extension in ['.jpg', '.jpeg', '.png']:
             return file_path, "file_path"
 
@@ -111,7 +117,13 @@ def get_content_from_input(path_or_url: str):
                 for shape in slide.shapes:
                     if hasattr(shape, "text"): content += shape.text + "\n"
         
-        return content, "text"
+        # 추출된 콘텐츠가 있으면 text 타입과 함께 반환
+        if content:
+            return content, "text"
+        else:
+            # 지원하지 않는 파일 형식이거나 텍스트 추출에 실패한 경우
+            print(f"    [WARNING] Could not extract text from {file_path}. It might be an unsupported format.")
+            return None, None
 
     except Exception as e:
         print(f"    [ERROR] Failed to process file {file_path}: {e}")
