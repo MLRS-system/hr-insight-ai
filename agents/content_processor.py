@@ -1,5 +1,3 @@
-# agents/content_processor.py
-
 import os
 import torch
 from PIL import Image
@@ -82,7 +80,6 @@ class ContentProcessorAgent:
                 print(f"    [CRITICAL ERROR] Failed to load models for ContentProcessorAgent: {e}")
             raise
 
-
     def process(self):
         """
         입력 유형(파일/텍스트)에 따라 올바른 파이프라인을 실행하도록 수정된 process 함수
@@ -92,46 +89,41 @@ class ContentProcessorAgent:
         file_path_input = self.shared_context.get("content_file_path")
         text_input = self.shared_context.get("content_text")
 
-        # 1. 파일 입력(이미지, 문서 등)이 최우선
+        # 1. 파일 입력(이미지, 문서 등)이 최우선 처리 대상
         if file_path_input and os.path.exists(file_path_input):
-            self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트를 추출하는 중 (OCR)...")
+            self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지 분석 파이프라인 시작...")
             try:
+                # OCR과 캡셔닝을 모두 수행
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트 추출 중 (OCR)...")
                 image = Image.open(file_path_input).convert("RGB")
                 ocr_results = self.ocr_reader.readtext(file_path_input, paragraph=True)
                 extracted_text = "\n".join([res[1] for res in ocr_results])
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 텍스트 추출 완료")
 
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지의 시각적 특징을 분석하는 중 (Captioning)...")
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", "시각적 특징 분석 중 (Captioning)...")
                 caption_inputs = self.caption_processor(images=image, return_tensors="pt").to(self.device)
                 caption_outputs = self.caption_model.generate(**caption_inputs, max_new_tokens=128)
                 visual_caption = self.caption_processor.decode(caption_outputs[0], skip_special_tokens=True)
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 시각적 특징 분석 완료")
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 시각적 분석 완료")
                 
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", "추출된 정보를 종합하여 요약하는 중 (Summarization)...")
-                combined_content = f"""[이미지에서 추출된 텍스트 정보]:
-{extracted_text}
-
-[이미지에 대한 핵심 시각 정보]:
-{visual_caption}
-"""
+                combined_content = f"[이미지에서 추출된 텍스트]:\n{extracted_text}\n\n[이미지의 시각적 요약]:\n{visual_caption}"
                 self._summarize_text(combined_content)
                 return
 
             except Exception as e:
-                print(f"    [ERROR] ContentProcessorAgent pipeline failed: {e}")
-                self.shared_context.add_feedback(f"ContentProcessor: Error during local pipeline: {e}")
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", f"오류 발생: {e}")
-                return # 오류 발생 시 종료
+                print(f"    [ERROR] ContentProcessorAgent 이미지 처리 실패: {e}")
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", f"이미지 처리 중 오류 발생: {e}")
+                return
 
         # 2. 파일 입력이 없고, 텍스트 입력만 있을 경우
-        if text_input:
-            self.shared_context.add_history("ContentProcessorAgent", "Processing", "텍스트 입력을 처리하는 중...")
+        elif text_input:
+            self.shared_context.add_history("ContentProcessorAgent", "Processing", "텍스트 입력 처리 중...")
             self._summarize_text(text_input)
             return
 
         # 3. 유효한 입력이 아무것도 없는 경우
-        print("    (Agent: ContentProcessor) - No valid input found.")
-        self.shared_context.add_feedback("ContentProcessor: No valid input file or text found.")
+        print("    (Agent: ContentProcessor) - 유효한 입력 없음.")
+        self.shared_context.add_feedback("ContentProcessor: 유효한 파일이나 텍스트 입력이 없습니다.")
 
     def _summarize_text(self, content: str):
         """로드된 LLM을 사용하여 텍스트를 요약하는 헬퍼 함수"""
