@@ -3,15 +3,16 @@
 # 1. 베이스 이미지 선택 (파이썬 3.10 버전)
 FROM python:3.10-slim
 
-# 2. 시스템 프로그램 설치 (Poppler for pdf2image, Chrome for Selenium)
-# apt-get: 리눅스(데비안 계열)에서 프로그램을 설치하는 명령어
+# 2. 시스템 프로그램 설치 (Poppler & Chrome)
+# apt-key 대신 새로운 방식으로 Chrome 인증키를 추가합니다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     wget \
     gnupg \
     unzip \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    ca-certificates \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-archive-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-archive-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
