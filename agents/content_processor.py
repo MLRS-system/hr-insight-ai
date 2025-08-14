@@ -3,34 +3,30 @@
 import os
 import torch
 from PIL import Image
-# 필요한 라이브러리들을 미리 임포트합니다.
-import easyocr
 from transformers import AutoProcessor, BlipForConditionalGeneration, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from core.shared_context import SharedContext
-# file_handler는 이제 Orchestrator 레벨에서만 사용되므로 여기서 직접 임포트할 필요가 없습니다.
-# from utils.file_handler import get_content_from_input
+# easyocr 대신 새로운 하이브리드 OCR 핸들러를 임포트합니다.
+from utils.ocr_handler import perform_hybrid_ocr 
 from config import USE_4BIT_QUANTIZATION, HF_CACHE_DIR, MAX_SEQUENCE_LENGTH, CAPTIONING_MODEL_PATH, SYNTHESIS_LLM_PATH
 
 class ContentProcessorAgent:
     """
-    지연 로딩, 조건부 양자화, 상세 로깅, 명확한 책임 분리가 적용된 최종 콘텐츠 처리 에이전트.
+    하이브리드 OCR 시스템(Google Vision + Tesseract)이 적용된 최종 콘텐츠 처리 에이전트.
     """
     def __init__(self, shared_context: SharedContext):
-        """에이전트를 초기화하지만, 무거운 모델들은 로드하지 않습니다."""
+        """에이전트를 초기화하지만, easyocr를 포함한 무거운 모델들은 로드하지 않습니다."""
         self.shared_context = shared_context
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # 모델 관련 변수들을 None으로 초기화
-        self.ocr_reader = None
+        # easyocr 리더를 제거하고 나머지 변수들을 초기화합니다.
         self.caption_processor = None
         self.caption_model = None
         self.llm_tokenizer = None
         self.llm_model = None
-        self.models_loaded = False # 로딩 상태 플래그
+        self.models_loaded = False
         self.prompt_template = ""
         
-        # 프롬프트 템플릿은 미리 로드
         try:
             prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'content_summary.prompt')
             with open(prompt_path, 'r', encoding='utf-8') as f:
@@ -41,16 +37,14 @@ class ContentProcessorAgent:
         print("    (Agent: ContentProcessor) - Initialized (Lazy Loading Mode).")
     
     def _load_models_if_needed(self):
-        """실제로 필요할 때 모델들을 로드하는 내부 함수"""
+        """실제로 필요할 때 캡셔닝 및 요약 모델을 로드합니다."""
         if self.models_loaded:
             return
             
         print("    (Agent: ContentProcessor) - Loading models for the first time...")
         self.shared_context.add_history("ContentProcessorAgent", "Model Loading", "콘텐츠 분석 모델 로드 중...")
         try:
-            print("    (Sub-task) Loading OCR model (easyocr)...")
-            self.ocr_reader = easyocr.Reader(['ko', 'en'], gpu=torch.cuda.is_available())
-
+            # easyocr 로딩 부분을 완전히 제거합니다.
             print(f"    (Sub-task) Loading Image Captioning model ({CAPTIONING_MODEL_PATH})...")
             self.caption_processor = AutoProcessor.from_pretrained(CAPTIONING_MODEL_PATH, cache_dir=HF_CACHE_DIR)
             self.caption_model = BlipForConditionalGeneration.from_pretrained(CAPTIONING_MODEL_PATH, cache_dir=HF_CACHE_DIR).to(self.device)
@@ -60,12 +54,9 @@ class ContentProcessorAgent:
             
             quantization_config = None
             if USE_4BIT_QUANTIZATION and self.device == "cuda":
-                print("    (Sub-task) - Applying 4-bit quantization.")
                 quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.bfloat16
+                    load_in_4bit=True, bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
                 )
             
             self.llm_model = AutoModelForCausalLM.from_pretrained(
@@ -80,36 +71,29 @@ class ContentProcessorAgent:
             print("    (Agent: ContentProcessor) - All models loaded successfully.")
             self.shared_context.add_history("ContentProcessorAgent", "Model Loading", "✓ 콘텐츠 분석 모델 로드 완료")
         except Exception as e:
-            if "bitsandbytes" in str(e):
-                 print(f"    [CRITICAL ERROR] bitsandbytes 라이브러리 로딩 실패. Cloud CPU 환경에서는 지원되지 않을 수 있습니다: {e}")
-            else:
-                print(f"    [CRITICAL ERROR] Failed to load models for ContentProcessorAgent: {e}")
+            print(f"    [CRITICAL ERROR] Failed to load models for ContentProcessorAgent: {e}")
             raise
 
     def process(self):
-        """
-        입력 유형(파일/텍스트)에 따라 올바른 파이프라인을 실행하도록 책임 소재를 명확히 한 최종 버전
-        """
+        """입력 유형에 따라 올바른 파이프라인을 실행하며, OCR은 ocr_handler에게 위임합니다."""
         self._load_models_if_needed()
         
         file_path_input = self.shared_context.get("content_file_path")
         text_input = self.shared_context.get("content_text")
 
-        # 1. 파일 경로가 있는 경우 (이미지 또는 문서)
+        # 1. 파일 경로가 있는 경우 (이미지 처리)
         if file_path_input and os.path.exists(file_path_input):
             try:
-                # 이미지 파일인지 확인하여 이미지 처리 파이프라인 실행
-                Image.open(file_path_input).verify() # 이미지 파일인지 간단히 확인
+                Image.open(file_path_input).verify()
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지 분석 파이프라인 시작...")
                 image = Image.open(file_path_input).convert("RGB")
                 
-                # --- OCR (방탄 로직 추가) ---
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트 추출 중 (OCR)...")
-                ocr_results = self.ocr_reader.readtext(file_path_input, paragraph=True)
-                extracted_text = "\n".join([res[1] for res in ocr_results]) if ocr_results else "이미지에서 텍스트를 찾을 수 없습니다."
+                # --- OCR 로직을 새로운 하이브리드 핸들러 호출로 변경 ---
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트 추출 중 (Hybrid OCR)...")
+                extracted_text = perform_hybrid_ocr(file_path_input)
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 텍스트 추출 완료")
 
-                # --- Captioning (방탄 로직 추가) ---
+                # --- Captioning ---
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "시각적 특징 분석 중 (Captioning)...")
                 caption_inputs = self.caption_processor(images=image, return_tensors="pt").to(self.device)
                 caption_outputs = self.caption_model.generate(**caption_inputs, max_new_tokens=128)
@@ -120,11 +104,9 @@ class ContentProcessorAgent:
                 self._summarize_text(combined_content)
                 return
 
-            except (IOError, SyntaxError):
-                # 이미지 파일이 아닌 경우 (file_handler가 텍스트를 추출하지 못한 경우)
-                error_msg = "지원하지 않는 파일 형식이거나 파일이 손상되었습니다."
+            except Exception as e:
+                error_msg = f"이미지 처리 중 오류 발생: {e}"
                 print(f"    (ContentProcessor) - {error_msg}")
-                self.shared_context.add_feedback(f"ContentProcessor: {error_msg}")
                 self.shared_context.set("content_summary", f"오류: {error_msg}")
                 return
 
@@ -135,10 +117,7 @@ class ContentProcessorAgent:
             return
 
         # 3. 유효한 입력이 없는 경우
-        error_msg = "유효한 입력이 없습니다."
-        self.shared_context.add_feedback(f"ContentProcessor: {error_msg}")
-        self.shared_context.set("content_summary", f"오류: {error_msg}")
-
+        self.shared_context.set("content_summary", "오류: 분석할 콘텐츠가 없습니다.")
 
     def _summarize_text(self, content: str):
         """LLM이 실패하더라도 절대 멈추지 않는 최종 요약 함수"""

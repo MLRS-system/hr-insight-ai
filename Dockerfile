@@ -6,6 +6,8 @@ FROM python:3.10-slim
 # 2. 시스템 프로그램 설치 (Poppler & Chrome)
 # apt-key 대신 새로운 방식으로 Chrome 인증키를 추가합니다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-kor \
     poppler-utils \
     wget \
     gnupg \
@@ -26,7 +28,7 @@ COPY requirements.txt .
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # 6. requirements.txt에 명시된 나머지 라이브러리 설치
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 7. 프로젝트의 나머지 모든 코드를 복사
 COPY . .
