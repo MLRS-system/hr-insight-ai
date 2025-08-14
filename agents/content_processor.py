@@ -1,3 +1,5 @@
+# agents/content_processor.py
+
 import os
 import torch
 from PIL import Image
@@ -10,7 +12,7 @@ from config import USE_4BIT_QUANTIZATION, HF_CACHE_DIR, MAX_SEQUENCE_LENGTH, CAP
 
 class ContentProcessorAgent:
     """
-    지연 로딩, 조건부 양자화, 상세 로깅이 적용된 콘텐츠 처리 에이전트.
+    지연 로딩, 조건부 양자화, 상세 로깅, 이미지 처리 로직이 모두 수정된 최종 에이전트.
     """
     def __init__(self, shared_context: SharedContext):
         """에이전트를 초기화하지만, 무거운 모델들은 로드하지 않습니다."""
@@ -40,7 +42,7 @@ class ContentProcessorAgent:
             return
             
         print("    (Agent: ContentProcessor) - Loading models for the first time...")
-        self.shared_context.add_history("ContentProcessorAgent", "Model Loading", "AI 모델들을 메모리에 로드하는 중...")
+        self.shared_context.add_history("ContentProcessorAgent", "Model Loading", "콘텐츠 분석 모델 로드 중...")
         try:
             print("    (Sub-task) Loading OCR model (easyocr)...")
             self.ocr_reader = easyocr.Reader(['ko', 'en'], gpu=torch.cuda.is_available())
@@ -72,7 +74,7 @@ class ContentProcessorAgent:
             
             self.models_loaded = True
             print("    (Agent: ContentProcessor) - All models loaded successfully.")
-            self.shared_context.add_history("ContentProcessorAgent", "Model Loading", "✓ AI 모델 로드 완료")
+            self.shared_context.add_history("ContentProcessorAgent", "Model Loading", "✓ 콘텐츠 분석 모델 로드 완료")
         except Exception as e:
             if "bitsandbytes" in str(e):
                  print(f"    [CRITICAL ERROR] bitsandbytes 라이브러리 로딩 실패. Cloud CPU 환경에서는 지원되지 않을 수 있습니다: {e}")
@@ -82,20 +84,24 @@ class ContentProcessorAgent:
 
     def process(self):
         """
-        입력 유형(파일/텍스트)에 따라 올바른 파이프라인을 실행하도록 수정된 process 함수
+        입력 유형(파일/텍스트)에 따라 올바른 파이프라인을 실행하도록 수정된 최종 버전
         """
         self._load_models_if_needed()
         
         file_path_input = self.shared_context.get("content_file_path")
         text_input = self.shared_context.get("content_text")
 
-        # 1. 파일 입력(이미지, 문서 등)이 최우선 처리 대상
+        # 1. 파일 경로가 있는 경우 (이미지 또는 문서)
         if file_path_input and os.path.exists(file_path_input):
-            self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지 분석 파이프라인 시작...")
             try:
-                # OCR과 캡셔닝을 모두 수행
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트 추출 중 (OCR)...")
+                # 이미지 파일인지 확인하여 이미지 처리 파이프라인 실행
+                Image.open(file_path_input).verify() # 이미지 파일인지 간단히 확인
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지 분석 파이프라인 시작...")
+                
+                # OCR과 캡셔닝 수행
                 image = Image.open(file_path_input).convert("RGB")
+                
+                self.shared_context.add_history("ContentProcessorAgent", "Processing", "이미지에서 텍스트 추출 중 (OCR)...")
                 ocr_results = self.ocr_reader.readtext(file_path_input, paragraph=True)
                 extracted_text = "\n".join([res[1] for res in ocr_results])
                 self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 텍스트 추출 완료")
@@ -110,36 +116,47 @@ class ContentProcessorAgent:
                 self._summarize_text(combined_content)
                 return
 
-            except Exception as e:
-                print(f"    [ERROR] ContentProcessorAgent 이미지 처리 실패: {e}")
-                self.shared_context.add_history("ContentProcessorAgent", "Processing", f"이미지 처리 중 오류 발생: {e}")
+            except (IOError, SyntaxError) as e:
+                # 이미지 파일이 아닌 경우 (file_handler가 텍스트를 추출하지 못한 경우)
+                print(f"    (ContentProcessor) - Not a valid image file, or text extraction failed: {e}")
+                self.shared_context.add_feedback("ContentProcessor: 지원하지 않는 파일 형식이거나 파일이 손상되었습니다.")
                 return
 
-        # 2. 파일 입력이 없고, 텍스트 입력만 있을 경우
+        # 2. 텍스트 입력만 있는 경우
         elif text_input:
             self.shared_context.add_history("ContentProcessorAgent", "Processing", "텍스트 입력 처리 중...")
             self._summarize_text(text_input)
             return
 
-        # 3. 유효한 입력이 아무것도 없는 경우
-        print("    (Agent: ContentProcessor) - 유효한 입력 없음.")
-        self.shared_context.add_feedback("ContentProcessor: 유효한 파일이나 텍스트 입력이 없습니다.")
+        # 3. 유효한 입력이 없는 경우
+        self.shared_context.add_feedback("ContentProcessor: 유효한 입력이 없습니다.")
 
     def _summarize_text(self, content: str):
-        """로드된 LLM을 사용하여 텍스트를 요약하는 헬퍼 함수"""
+        """로드된 LLM을 사용하여 텍스트를 요약하는 헬퍼 함수 (안정성 강화)"""
+        self.shared_context.add_history("ContentProcessorAgent", "Processing", "정보 종합 및 요약 중...")
         try:
             final_prompt = self.prompt_template.format(content=content)
             inputs = self.llm_tokenizer(final_prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH // 2).to(self.device)
-            outputs = self.llm_model.generate(**inputs, max_new_tokens=MAX_SEQUENCE_LENGTH // 2, do_sample=True, temperature=0.7)
-            final_summary = self.llm_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+            
+            outputs = self.llm_model.generate(**inputs, max_new_tokens=MAX_SEQUENCE_LENGTH // 2, temperature=0.7)
+            
+            if outputs is not None and len(outputs) > 0:
+                final_summary = self.llm_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+            else:
+                final_summary = "요약 결과를 생성하는 데 실패했습니다."
+                print("    [WARNING] LLM model generated empty output.")
+
+            if not final_summary:
+                final_summary = "콘텐츠에서 핵심 내용을 요약할 수 없습니다."
 
             self.shared_context.set("content_summary", final_summary)
-            self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 콘텐츠 요약 및 합성 완료")
+            self.shared_context.add_history("ContentProcessorAgent", "Processing", "✓ 콘텐츠 요약 완료")
         except Exception as e:
+            error_message = f"요약 중 오류 발생: {e}"
             print(f"    [ERROR] Text summarization failed: {e}")
-            self.shared_context.add_feedback(f"ContentProcessor: Error during text summarization: {e}")
-            self.shared_context.set("content_summary", f"Error: {e}")
-            self.shared_context.add_history("ContentProcessorAgent", "Processing", f"요약 중 오류 발생: {e}")
+            self.shared_context.add_feedback(f"ContentProcessor: {error_message}")
+            self.shared_context.set("content_summary", error_message)
+            self.shared_context.add_history("ContentProcessorAgent", "Processing", error_message)
 
     def refine(self, feedback: str):
         """피드백을 바탕으로 요약문을 개선합니다."""
